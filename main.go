@@ -44,13 +44,13 @@ func main() {
 			http.StripPrefix("/app/", http.FileServer(http.Dir("."))),
 		),
 	)
-	handler.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+	handler.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
-	handler.HandleFunc("/metrics", apiCfg.getServerHits)
-	handler.HandleFunc("/reset", apiCfg.resetServerHits)
+	handler.HandleFunc("GET /metrics", apiCfg.getServerHits)
+	handler.HandleFunc("POST /reset", apiCfg.resetServerHits)
 
 	server.ListenAndServe()
 }
