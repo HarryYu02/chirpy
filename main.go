@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/harryyu02/chirpy/internal/database"
 	"net/http"
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/harryyu02/chirpy/internal/database"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -16,7 +20,8 @@ import (
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
-	db *database.Queries
+	db             *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -38,15 +43,69 @@ func (cfg *apiConfig) getServerHits(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) resetServerHits(w http.ResponseWriter, r *http.Request) {
+	if cfg.platform != "dev" {
+		w.WriteHeader(403)
+	}
 	cfg.fileserverHits.Store(0)
+	err := cfg.db.DeleteAllUsers(context.Background())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong"}`))
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK"))
 }
 
+func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	type createUser struct {
+		Email string `json:"email"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	createUserArgs := createUser{}
+	err := decoder.Decode(&createUserArgs)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
+		return
+	}
+	created, err := cfg.db.CreateUser(context.Background(), createUserArgs.Email)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - create user failed"}`))
+		fmt.Printf("err.Error(): %v\n", err.Error())
+		return
+	}
+	type user struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+	}
+	createdUser := user{
+		ID:        created.ID,
+		CreatedAt: created.CreatedAt,
+		UpdatedAt: created.UpdatedAt,
+		Email:     created.Email,
+	}
+	createdBytes, err := json.Marshal(createdUser)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - user invalid"}`))
+		return
+	}
+
+	w.WriteHeader(201)
+	w.Write(createdBytes)
+
+}
+
 func main() {
 	godotenv.Load(".env")
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		return
@@ -54,6 +113,7 @@ func main() {
 	apiCfg := &apiConfig{}
 	dbQueries := database.New(db)
 	apiCfg.db = dbQueries
+	apiCfg.platform = platform
 
 	handler := http.NewServeMux()
 	server := &http.Server{
@@ -105,6 +165,7 @@ func main() {
 		w.WriteHeader(200)
 		fmt.Fprintf(w, `{"cleaned_body": "%s"}`, strings.Join(words, " "))
 	})
+	handler.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 
 	handler.HandleFunc("GET /admin/metrics", apiCfg.getServerHits)
 	handler.HandleFunc("POST /admin/reset", apiCfg.resetServerHits)
