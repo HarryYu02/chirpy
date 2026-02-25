@@ -18,9 +18,14 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *apiConfig) getServerHits(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
-	fmt.Fprintf(w, "Hits: %d", cfg.fileserverHits.Load())
+	fmt.Fprintf(w, `<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+</html>`, cfg.fileserverHits.Load())
 }
 
 func (cfg *apiConfig) resetServerHits(w http.ResponseWriter, r *http.Request) {
@@ -49,8 +54,8 @@ func main() {
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
-	handler.HandleFunc("GET /api/metrics", apiCfg.getServerHits)
-	handler.HandleFunc("POST /api/reset", apiCfg.resetServerHits)
+	handler.HandleFunc("GET /admin/metrics", apiCfg.getServerHits)
+	handler.HandleFunc("POST /admin/reset", apiCfg.resetServerHits)
 
 	server.ListenAndServe()
 }
