@@ -18,11 +18,28 @@ import (
 	_ "github.com/lib/pq"
 )
 
+
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
 }
+
+type chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
+type user struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,12 +94,6 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"error": "Something went wrong - create user failed"}`))
 		fmt.Printf("err.Error(): %v\n", err.Error())
 		return
-	}
-	type user struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
 	}
 	createdUser := user{
 		ID:        created.ID,
@@ -152,13 +163,6 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 		fmt.Printf("err.Error(): %v\n", err.Error())
 		return
 	}
-	type chirp struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Body      string    `json:"body"`
-		UserID    uuid.UUID `json:"user_id"`
-	}
 	createdChirp := chirp{
 		ID:        created.ID,
 		CreatedAt: created.CreatedAt,
@@ -186,13 +190,6 @@ func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("err.Error(): %v\n", err.Error())
 		return
 	}
-	type chirp struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Body      string    `json:"body"`
-		UserID    uuid.UUID `json:"user_id"`
-	}
 	chirpsJson := make([]chirp, len(chirps))
 	for i, c := range chirps {
 		chirpsJson[i] = chirp{
@@ -211,6 +208,39 @@ func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	w.WriteHeader(200)
+	w.Write(gotBytes)
+}
+
+func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	chirpID := r.PathValue("chirpID")
+	chirpUUID, err := uuid.Parse(chirpID)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - chirp id invalid"}`))
+		return
+	}
+	c, err := cfg.db.GetChirpByID(context.Background(), chirpUUID)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error": "Something went wrong - chirp id not found"}`))
+		return
+	}
+
+	chirpsJson := chirp{
+		ID: c.ID,
+		CreatedAt: c.CreatedAt,
+		UpdatedAt: c.UpdatedAt,
+		Body: c.Body,
+		UserID: c.UserID,
+	}
+	gotBytes, err := json.Marshal(chirpsJson)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - chirp invalid"}`))
+		return
+	}
 	w.WriteHeader(200)
 	w.Write(gotBytes)
 }
@@ -248,6 +278,7 @@ func main() {
 	})
 	handler.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 	handler.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
+	handler.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handleGetChirpByID)
 	handler.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 
 	handler.HandleFunc("GET /admin/metrics", apiCfg.getServerHits)
