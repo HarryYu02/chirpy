@@ -203,7 +203,20 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	chirps, err := cfg.db.GetChirps(context.Background())
+	authorID := r.URL.Query().Get("author_id")
+	var chirps []database.Chirp
+	var err error
+	if len(authorID) > 0 {
+		authorUUID, err := uuid.Parse(authorID)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write([]byte(`{"error": "author id is invalid"}`))
+			return
+		}
+		chirps, err = cfg.db.GetChirpsByAuthor(context.Background(), authorUUID)
+	} else {
+		chirps, err = cfg.db.GetChirps(context.Background())
+	}
 	if err != nil {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - get chirps failed"}`))
