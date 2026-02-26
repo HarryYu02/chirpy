@@ -387,6 +387,66 @@ func (cfg *apiConfig) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(204)
 }
 
+func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - jwt token not provided"}`))
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - jwt token not valid"}`))
+		return
+	}
+
+	type updateUser struct {
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+	}
+	w.Header().Set("Content-Type", "application/json")
+	decoder := json.NewDecoder(r.Body)
+	updateUserArgs := updateUser{}
+	err = decoder.Decode(&updateUserArgs)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
+		return
+	}
+	hashedPassword, err := auth.HashPassword(updateUserArgs.Password)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - hash password failed"}`))
+		return
+	}
+	updated, err := cfg.db.UpdateUserByID(context.Background(), database.UpdateUserByIDParams{
+		ID: userID,
+		Email: updateUserArgs.Email,
+		HashedPassword: hashedPassword,
+	})
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - update user failed"}`))
+		return
+	}
+	updateUserRes := user{
+		ID:        updated.ID,
+		CreatedAt: updated.CreatedAt,
+		UpdatedAt: updated.UpdatedAt,
+		Email:     updated.Email,
+	}
+	updateUserResBytes, err := json.Marshal(updateUserRes)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - user invalid"}`))
+		return
+	}
+	w.WriteHeader(200)
+	w.Write(updateUserResBytes)
+}
+
 func main() {
 	godotenv.Load(".env")
 	dbURL := os.Getenv("DB_URL")
@@ -421,6 +481,7 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 	handler.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
+	handler.HandleFunc("PUT /api/users", apiCfg.handleUpdateUser)
 	handler.HandleFunc("POST /api/login", apiCfg.handleLogin)
 	handler.HandleFunc("POST /api/refresh", apiCfg.handleRefresh)
 	handler.HandleFunc("POST /api/revoke", apiCfg.handleRevoke)
