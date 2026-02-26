@@ -24,6 +24,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey	   string
 }
 
 type chirp struct {
@@ -497,6 +498,12 @@ func (cfg *apiConfig) handleDeleteChirpByID(w http.ResponseWriter, r *http.Reque
 
 func (cfg *apiConfig) handlePolkaWebhooks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	key, err := auth.GetAPIKey(r.Header)
+	if err != nil || key != cfg.polkaKey {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Polka Api Key mismatched"}`))
+		return
+	}
 	type reqBody struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -505,7 +512,7 @@ func (cfg *apiConfig) handlePolkaWebhooks(w http.ResponseWriter, r *http.Request
 	}
 	decoder := json.NewDecoder(r.Body)
 	args := reqBody{}
-	err := decoder.Decode(&args)
+	err = decoder.Decode(&args)
 	if err != nil {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
@@ -532,6 +539,7 @@ func main() {
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
 	jwtSecret := os.Getenv("JWT_SECRET")
+	polkaKey := os.Getenv("POLKA_KEY")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		return
@@ -541,6 +549,7 @@ func main() {
 	apiCfg.db = dbQueries
 	apiCfg.platform = platform
 	apiCfg.jwtSecret = jwtSecret
+	apiCfg.polkaKey = polkaKey
 
 	handler := http.NewServeMux()
 	server := &http.Server{
