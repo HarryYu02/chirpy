@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 type chirp struct {
@@ -38,6 +39,7 @@ type user struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -96,7 +98,7 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	created, err := cfg.db.CreateUser(context.Background(), database.CreateUserParams{
-		Email: createUserArgs.Email,
+		Email:          createUserArgs.Email,
 		HashedPassword: hashedPassword,
 	})
 	if err != nil {
@@ -123,24 +125,28 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - get jwt token failed"}`))
+		return
+	}
+	id, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - validate jwt token failed"}`))
+		return
+	}
 	type createChirp struct {
 		Body   string `json:"body"`
-		UserId string `json:"user_id"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	createChirpArgs := createChirp{}
-	err := decoder.Decode(&createChirpArgs)
-	w.Header().Set("Content-Type", "application/json")
+	err = decoder.Decode(&createChirpArgs)
 	if err != nil {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
-		return
-	}
-	userId, err := uuid.Parse(createChirpArgs.UserId)
-	if err != nil {
-		w.WriteHeader(500)
-		w.Write([]byte(`{"error": "Something went wrong - parse user_id failed"}`))
-		fmt.Printf("err.Error(): %v\n", err.Error())
 		return
 	}
 
@@ -164,7 +170,7 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 
 	created, err := cfg.db.CreateChirp(context.Background(), database.CreateChirpParams{
 		Body:   cleanedBody,
-		UserID: userId,
+		UserID: id,
 	})
 
 	if err != nil {
@@ -257,8 +263,9 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request)
 
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type login struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email            string `json:"email"`
+		Password         string `json:"password"`
+		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
 	w.Header().Set("Content-Type", "application/json")
 	decoder := json.NewDecoder(r.Body)
@@ -268,6 +275,10 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
 		return
+	}
+	expires := time.Second * 60 * 60
+	if loginArgs.ExpiresInSeconds > 0 && loginArgs.ExpiresInSeconds < 60 * 60 {
+		expires = time.Second * time.Duration(loginArgs.ExpiresInSeconds)
 	}
 	u, err := cfg.db.GetUserByEmail(context.Background(), loginArgs.Email)
 	if err != nil {
@@ -282,11 +293,18 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, err := auth.MakeJWT(u.ID, cfg.jwtSecret, expires)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - jwt create token failed"}`))
+		return
+	}
 	loggedInUser := user{
 		ID:        u.ID,
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
 		Email:     u.Email,
+		Token:     token,
 	}
 	loggedInBytes, err := json.Marshal(loggedInUser)
 	if err != nil {
@@ -302,6 +320,7 @@ func main() {
 	godotenv.Load(".env")
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	jwtSecret := os.Getenv("JWT_SECRET")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		return
@@ -310,6 +329,7 @@ func main() {
 	dbQueries := database.New(db)
 	apiCfg.db = dbQueries
 	apiCfg.platform = platform
+	apiCfg.jwtSecret = jwtSecret
 
 	handler := http.NewServeMux()
 	server := &http.Server{

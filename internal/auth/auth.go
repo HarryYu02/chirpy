@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/alexedwards/argon2id"
@@ -28,10 +30,10 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 	nowDate := jwt.NewNumericDate(time.Now())
 	expiresDate := jwt.NewNumericDate(nowDate.Add(expiresIn))
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.RegisteredClaims{
-		Issuer: "chirpy-access",
-		IssuedAt: nowDate,
+		Issuer:    "chirpy-access",
+		IssuedAt:  nowDate,
 		ExpiresAt: expiresDate,
-		Subject: userID.String(),
+		Subject:   userID.String(),
 	})
 	signed, err := token.SignedString([]byte(tokenSecret))
 	if err != nil {
@@ -56,4 +58,15 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 		return uuid.New(), err
 	}
 	return userUUID, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+	token := headers.Get("Authorization")
+	if len(token) == 0 {
+		return "", fmt.Errorf("Authorization header not found")
+	}
+	if len(token) < 8 || token[:7] != "Bearer " {
+		return "", fmt.Errorf("Authorization header invalid")
+	}
+	return token[7:], nil
 }
