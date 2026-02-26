@@ -35,11 +35,12 @@ type chirp struct {
 }
 
 type user struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -139,7 +140,7 @@ func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	type createChirp struct {
-		Body   string `json:"body"`
+		Body string `json:"body"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	createChirpArgs := createChirp{}
@@ -265,7 +266,6 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type login struct {
 		Email            string `json:"email"`
 		Password         string `json:"password"`
-		ExpiresInSeconds int `json:"expires_in_seconds"`
 	}
 	w.Header().Set("Content-Type", "application/json")
 	decoder := json.NewDecoder(r.Body)
@@ -275,10 +275,6 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
 		return
-	}
-	expires := time.Second * 60 * 60
-	if loginArgs.ExpiresInSeconds > 0 && loginArgs.ExpiresInSeconds < 60 * 60 {
-		expires = time.Second * time.Duration(loginArgs.ExpiresInSeconds)
 	}
 	u, err := cfg.db.GetUserByEmail(context.Background(), loginArgs.Email)
 	if err != nil {
@@ -293,18 +289,31 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.MakeJWT(u.ID, cfg.jwtSecret, expires)
+	token, err := auth.MakeJWT(u.ID, cfg.jwtSecret, time.Second * 60 * 60)
 	if err != nil {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - jwt create token failed"}`))
 		return
 	}
+	refreshToken := auth.MakeRefreshToken()
+    createdRefreshToken, err := cfg.db.CreateRefreshToken(context.Background(), database.CreateRefreshTokenParams{
+		Token: refreshToken,
+		UserID: u.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
+	})
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - create refresh token failed"}`))
+		return
+	}
+
 	loggedInUser := user{
 		ID:        u.ID,
 		CreatedAt: u.CreatedAt,
 		UpdatedAt: u.UpdatedAt,
 		Email:     u.Email,
 		Token:     token,
+		RefreshToken: createdRefreshToken.Token,
 	}
 	loggedInBytes, err := json.Marshal(loggedInUser)
 	if err != nil {
@@ -314,6 +323,68 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(200)
 	w.Write(loggedInBytes)
+}
+
+func (cfg *apiConfig) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - refresh token not provided"}`))
+		return
+	}
+
+	refreshToken, err := cfg.db.GetRefreshTokenByToken(context.Background(), token)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - refresh token not found"}`))
+		return
+	}
+	if refreshToken.RevokedAt.Valid || refreshToken.ExpiresAt.Before(time.Now()) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - refresh token expired or revoked"}`))
+		return
+	}
+
+	newJwt, err := auth.MakeJWT(refreshToken.UserID, cfg.jwtSecret, time.Second * 60 * 60)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - jwt create token failed"}`))
+		return
+	}
+
+	w.WriteHeader(200)
+	fmt.Fprintf(w, `{"token": "%s"}`, newJwt)
+}
+
+func (cfg *apiConfig) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - refresh token not provided"}`))
+		return
+	}
+
+	refreshToken, err := cfg.db.GetRefreshTokenByToken(context.Background(), token)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - refresh token not found"}`))
+		return
+	}
+	if refreshToken.RevokedAt.Valid || refreshToken.ExpiresAt.Before(time.Now()) {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - refresh token expired or revoked"}`))
+		return
+	}
+
+	err = cfg.db.RevokeRefreshToken(context.Background(), refreshToken.Token)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - refresh token revoke failed"}`))
+		return
+	}
+	w.WriteHeader(204)
 }
 
 func main() {
@@ -351,6 +422,8 @@ func main() {
 	})
 	handler.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
 	handler.HandleFunc("POST /api/login", apiCfg.handleLogin)
+	handler.HandleFunc("POST /api/refresh", apiCfg.handleRefresh)
+	handler.HandleFunc("POST /api/revoke", apiCfg.handleRevoke)
 	handler.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	handler.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handleGetChirpByID)
 	handler.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
