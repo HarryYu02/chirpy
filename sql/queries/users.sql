@@ -28,3 +28,17 @@ RETURNING *;
 -- name: DeleteUserByID :exec
 DELETE FROM users
 WHERE id = $1;
+
+-- name: UpgradeUserToRedByID :one
+UPDATE users
+SET updated_at = NOW(),
+    is_chirpy_red = true
+WHERE id = $1
+RETURNING *;
+
+-- name: DowngradeUserFromRedByID :one
+UPDATE users
+SET updated_at = NOW(),
+    is_chirpy_red = false
+WHERE id = $1
+RETURNING *;

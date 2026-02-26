@@ -41,6 +41,7 @@ type user struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -109,10 +110,11 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	createdUser := user{
-		ID:        created.ID,
-		CreatedAt: created.CreatedAt,
-		UpdatedAt: created.UpdatedAt,
-		Email:     created.Email,
+		ID:          created.ID,
+		CreatedAt:   created.CreatedAt,
+		UpdatedAt:   created.UpdatedAt,
+		Email:       created.Email,
+		IsChirpyRed: created.IsChirpyRed,
 	}
 	createdBytes, err := json.Marshal(createdUser)
 	if err != nil {
@@ -264,8 +266,8 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request)
 
 func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	type login struct {
-		Email            string `json:"email"`
-		Password         string `json:"password"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	w.Header().Set("Content-Type", "application/json")
 	decoder := json.NewDecoder(r.Body)
@@ -289,16 +291,16 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := auth.MakeJWT(u.ID, cfg.jwtSecret, time.Second * 60 * 60)
+	token, err := auth.MakeJWT(u.ID, cfg.jwtSecret, time.Second*60*60)
 	if err != nil {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - jwt create token failed"}`))
 		return
 	}
 	refreshToken := auth.MakeRefreshToken()
-    createdRefreshToken, err := cfg.db.CreateRefreshToken(context.Background(), database.CreateRefreshTokenParams{
-		Token: refreshToken,
-		UserID: u.ID,
+	createdRefreshToken, err := cfg.db.CreateRefreshToken(context.Background(), database.CreateRefreshTokenParams{
+		Token:     refreshToken,
+		UserID:    u.ID,
 		ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
 	})
 	if err != nil {
@@ -308,12 +310,13 @@ func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	loggedInUser := user{
-		ID:        u.ID,
-		CreatedAt: u.CreatedAt,
-		UpdatedAt: u.UpdatedAt,
-		Email:     u.Email,
-		Token:     token,
+		ID:           u.ID,
+		CreatedAt:    u.CreatedAt,
+		UpdatedAt:    u.UpdatedAt,
+		Email:        u.Email,
+		Token:        token,
 		RefreshToken: createdRefreshToken.Token,
+		IsChirpyRed:  u.IsChirpyRed,
 	}
 	loggedInBytes, err := json.Marshal(loggedInUser)
 	if err != nil {
@@ -346,7 +349,7 @@ func (cfg *apiConfig) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newJwt, err := auth.MakeJWT(refreshToken.UserID, cfg.jwtSecret, time.Second * 60 * 60)
+	newJwt, err := auth.MakeJWT(refreshToken.UserID, cfg.jwtSecret, time.Second*60*60)
 	if err != nil {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - jwt create token failed"}`))
@@ -403,8 +406,8 @@ func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type updateUser struct {
-		Email            string `json:"email"`
-		Password         string `json:"password"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	w.Header().Set("Content-Type", "application/json")
 	decoder := json.NewDecoder(r.Body)
@@ -422,8 +425,8 @@ func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updated, err := cfg.db.UpdateUserByID(context.Background(), database.UpdateUserByIDParams{
-		ID: userID,
-		Email: updateUserArgs.Email,
+		ID:             userID,
+		Email:          updateUserArgs.Email,
 		HashedPassword: hashedPassword,
 	})
 	if err != nil {
@@ -432,10 +435,11 @@ func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	updateUserRes := user{
-		ID:        updated.ID,
-		CreatedAt: updated.CreatedAt,
-		UpdatedAt: updated.UpdatedAt,
-		Email:     updated.Email,
+		ID:          updated.ID,
+		CreatedAt:   updated.CreatedAt,
+		UpdatedAt:   updated.UpdatedAt,
+		Email:       updated.Email,
+		IsChirpyRed: updated.IsChirpyRed,
 	}
 	updateUserResBytes, err := json.Marshal(updateUserRes)
 	if err != nil {
@@ -491,6 +495,38 @@ func (cfg *apiConfig) handleDeleteChirpByID(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(204)
 }
 
+func (cfg *apiConfig) handlePolkaWebhooks(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	type reqBody struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	args := reqBody{}
+	err := decoder.Decode(&args)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
+		return
+	}
+	switch args.Event {
+	case "user.upgraded":
+		_, err := cfg.db.UpgradeUserToRedByID(context.Background(), args.Data.UserID)
+		if err != nil {
+			w.WriteHeader(404)
+			w.Write([]byte(`{"error": "User not found"}`))
+			return
+		}
+	default:
+		w.WriteHeader(204)
+		return
+	}
+	w.WriteHeader(204)
+	return
+}
+
 func main() {
 	godotenv.Load(".env")
 	dbURL := os.Getenv("DB_URL")
@@ -533,6 +569,8 @@ func main() {
 	handler.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handleGetChirpByID)
 	handler.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 	handler.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handleDeleteChirpByID)
+
+	handler.HandleFunc("POST /api/polka/webhooks", apiCfg.handlePolkaWebhooks)
 
 	handler.HandleFunc("GET /admin/metrics", apiCfg.getServerHits)
 	handler.HandleFunc("POST /admin/reset", apiCfg.resetServerHits)
