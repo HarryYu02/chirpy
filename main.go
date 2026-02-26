@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/harryyu02/chirpy/internal/auth"
 	"github.com/harryyu02/chirpy/internal/database"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
-
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
@@ -39,7 +39,6 @@ type user struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
 }
-
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +77,8 @@ func (cfg *apiConfig) resetServerHits(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	type createUser struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	decoder := json.NewDecoder(r.Body)
 	createUserArgs := createUser{}
@@ -88,7 +88,17 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
 		return
 	}
-	created, err := cfg.db.CreateUser(context.Background(), createUserArgs.Email)
+	hashedPassword, err := auth.HashPassword(createUserArgs.Password)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - hashing password failed"}`))
+		fmt.Printf("err.Error(): %v\n", err.Error())
+		return
+	}
+	created, err := cfg.db.CreateUser(context.Background(), database.CreateUserParams{
+		Email: createUserArgs.Email,
+		HashedPassword: hashedPassword,
+	})
 	if err != nil {
 		w.WriteHeader(500)
 		w.Write([]byte(`{"error": "Something went wrong - create user failed"}`))
@@ -193,11 +203,11 @@ func (cfg *apiConfig) handleGetChirps(w http.ResponseWriter, r *http.Request) {
 	chirpsJson := make([]chirp, len(chirps))
 	for i, c := range chirps {
 		chirpsJson[i] = chirp{
-			ID: c.ID,
+			ID:        c.ID,
 			CreatedAt: c.CreatedAt,
 			UpdatedAt: c.UpdatedAt,
-			Body: c.Body,
-			UserID: c.UserID,
+			Body:      c.Body,
+			UserID:    c.UserID,
 		}
 	}
 
@@ -229,11 +239,11 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request)
 	}
 
 	chirpsJson := chirp{
-		ID: c.ID,
+		ID:        c.ID,
 		CreatedAt: c.CreatedAt,
 		UpdatedAt: c.UpdatedAt,
-		Body: c.Body,
-		UserID: c.UserID,
+		Body:      c.Body,
+		UserID:    c.UserID,
 	}
 	gotBytes, err := json.Marshal(chirpsJson)
 	if err != nil {
@@ -243,6 +253,49 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request)
 	}
 	w.WriteHeader(200)
 	w.Write(gotBytes)
+}
+
+func (cfg *apiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
+	type login struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	w.Header().Set("Content-Type", "application/json")
+	decoder := json.NewDecoder(r.Body)
+	loginArgs := login{}
+	err := decoder.Decode(&loginArgs)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
+		return
+	}
+	u, err := cfg.db.GetUserByEmail(context.Background(), loginArgs.Email)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - user not found"}`))
+		return
+	}
+	match, err := auth.CheckPasswordHash(loginArgs.Password, u.HashedPassword)
+	if err != nil || !match {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - password is incorrect"}`))
+		return
+	}
+
+	loggedInUser := user{
+		ID:        u.ID,
+		CreatedAt: u.CreatedAt,
+		UpdatedAt: u.UpdatedAt,
+		Email:     u.Email,
+	}
+	loggedInBytes, err := json.Marshal(loggedInUser)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - user invalid"}`))
+		return
+	}
+	w.WriteHeader(200)
+	w.Write(loggedInBytes)
 }
 
 func main() {
@@ -277,6 +330,7 @@ func main() {
 		w.Write([]byte("OK"))
 	})
 	handler.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
+	handler.HandleFunc("POST /api/login", apiCfg.handleLogin)
 	handler.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	handler.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handleGetChirpByID)
 	handler.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
