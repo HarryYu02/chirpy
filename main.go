@@ -99,7 +99,82 @@ func (cfg *apiConfig) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(201)
 	w.Write(createdBytes)
+}
 
+func (cfg *apiConfig) handleCreateChirp(w http.ResponseWriter, r *http.Request) {
+	type createChirp struct {
+		Body   string `json:"body"`
+		UserId string `json:"user_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	createChirpArgs := createChirp{}
+	err := decoder.Decode(&createChirpArgs)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - parse args failed"}`))
+		return
+	}
+	userId, err := uuid.Parse(createChirpArgs.UserId)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - parse user_id failed"}`))
+		fmt.Printf("err.Error(): %v\n", err.Error())
+		return
+	}
+
+	if len(createChirpArgs.Body) > 140 {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error": "Chirp is too long"}`))
+		return
+	}
+	words := strings.Split(createChirpArgs.Body, " ")
+	profaneMap := map[string]struct{}{
+		"kerfuffle": {},
+		"sharbert":  {},
+		"fornax":    {},
+	}
+	for i, word := range words {
+		if _, ok := profaneMap[strings.ToLower(word)]; ok {
+			words[i] = "****"
+		}
+	}
+	cleanedBody := strings.Join(words, " ")
+
+	created, err := cfg.db.CreateChirp(context.Background(), database.CreateChirpParams{
+		Body:   cleanedBody,
+		UserID: userId,
+	})
+
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - create chirp failed"}`))
+		fmt.Printf("err.Error(): %v\n", err.Error())
+		return
+	}
+	type chirp struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+	createdChirp := chirp{
+		ID:        created.ID,
+		CreatedAt: created.CreatedAt,
+		UpdatedAt: created.UpdatedAt,
+		Body:      created.Body,
+		UserID:    created.UserID,
+	}
+	createdBytes, err := json.Marshal(createdChirp)
+	if err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong - chirp invalid"}`))
+		return
+	}
+
+	w.WriteHeader(201)
+	w.Write(createdBytes)
 }
 
 func main() {
@@ -133,39 +208,8 @@ func main() {
 		w.WriteHeader(200)
 		w.Write([]byte("OK"))
 	})
-	handler.HandleFunc("POST /api/validate_chirp", func(w http.ResponseWriter, r *http.Request) {
-		type chirp struct {
-			Body string `json:"body"`
-		}
-		decoder := json.NewDecoder(r.Body)
-		chirpBody := chirp{}
-		err := decoder.Decode(&chirpBody)
-		w.Header().Set("Content-Type", "application/json")
-		if err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(`{"error": "Something went wrong"}`))
-			return
-		}
-		if len(chirpBody.Body) > 140 {
-			w.WriteHeader(400)
-			w.Write([]byte(`{"error": "Chirp is too long"}`))
-			return
-		}
-		words := strings.Split(chirpBody.Body, " ")
-		profaneMap := map[string]struct{}{
-			"kerfuffle": {},
-			"sharbert":  {},
-			"fornax":    {},
-		}
-		for i, word := range words {
-			if _, ok := profaneMap[strings.ToLower(word)]; ok {
-				words[i] = "****"
-			}
-		}
-		w.WriteHeader(200)
-		fmt.Fprintf(w, `{"cleaned_body": "%s"}`, strings.Join(words, " "))
-	})
 	handler.HandleFunc("POST /api/users", apiCfg.handleCreateUser)
+	handler.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
 
 	handler.HandleFunc("GET /admin/metrics", apiCfg.getServerHits)
 	handler.HandleFunc("POST /admin/reset", apiCfg.resetServerHits)
