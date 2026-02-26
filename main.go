@@ -447,6 +447,50 @@ func (cfg *apiConfig) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	w.Write(updateUserResBytes)
 }
 
+func (cfg *apiConfig) handleDeleteChirpByID(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	chirpID := r.PathValue("chirpID")
+	chirpUUID, err := uuid.Parse(chirpID)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - chirp id not valid"}`))
+		return
+	}
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error": "Something went wrong - jwt token not provided"}`))
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		w.WriteHeader(403)
+		w.Write([]byte(`{"error": "Something went wrong - jwt token not valid"}`))
+		return
+	}
+
+	chirpToDelete, err := cfg.db.GetChirpByID(context.Background(), chirpUUID)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error": "Something went wrong - chirp not found"}`))
+		return
+	}
+	if chirpToDelete.UserID != userID {
+		w.WriteHeader(403)
+		w.Write([]byte(`{"error": "Something went wrong - not permitted"}`))
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	err = cfg.db.DeleteChirpByID(context.Background(), chirpUUID)
+	if err != nil {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error": "Something went wrong - delete user failed"}`))
+		return
+	}
+	w.WriteHeader(204)
+}
+
 func main() {
 	godotenv.Load(".env")
 	dbURL := os.Getenv("DB_URL")
@@ -488,6 +532,7 @@ func main() {
 	handler.HandleFunc("GET /api/chirps", apiCfg.handleGetChirps)
 	handler.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handleGetChirpByID)
 	handler.HandleFunc("POST /api/chirps", apiCfg.handleCreateChirp)
+	handler.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handleDeleteChirpByID)
 
 	handler.HandleFunc("GET /admin/metrics", apiCfg.getServerHits)
 	handler.HandleFunc("POST /admin/reset", apiCfg.resetServerHits)
